@@ -416,7 +416,7 @@ class TrayContext : ApplicationContext
         var menu = new ContextMenuStrip();
         var open = new ToolStripMenuItem("Choose input...");
         open.Font = new Font(open.Font, FontStyle.Bold);
-        open.Click += (s, e) => picker.ShowNearTray();
+        open.Click += (s, e) => picker.ShowAtCursor();
         menu.Items.Add(open);
         menu.Items.Add("Sleep display", null, (s, e) => SleepDisplays());
         menu.Items.Add(new ToolStripSeparator());
@@ -537,6 +537,7 @@ class InputPicker : Form
     string cachedId, cachedName;
     int? lastInput;
     DateTime hiddenAt;
+    Point anchor;
 
     class Snapshot
     {
@@ -579,7 +580,7 @@ class InputPicker : Form
     {
         // Clicking the tray icon deactivates (and hides) the popup first; don't reopen it on that same click.
         if (Visible || (DateTime.Now - hiddenAt).TotalMilliseconds < 300) HidePicker();
-        else ShowNearTray();
+        else ShowAtCursor();
     }
 
     // Reads the monitor name and supported inputs in the background right after startup.
@@ -589,8 +590,9 @@ class InputPicker : Form
         ThreadPool.QueueUserWorkItem(_ => Read(selector));
     }
 
-    public void ShowNearTray()
+    public void ShowAtCursor()
     {
+        anchor = Cursor.Position;
         // Show cached buttons immediately, then refresh the current input (~100 ms over DDC).
         Snapshot cached = null;
         lock (sync)
@@ -602,7 +604,7 @@ class InputPicker : Form
         else { title.Text = "Reading monitor..."; buttons.Controls.Clear(); }
 
         Show();
-        PlaceNearTray();
+        PlaceAtAnchor();
         Activate();
 
         string selector = getSelector();
@@ -651,7 +653,7 @@ class InputPicker : Form
     void Render(string name, int? current, List<int> inputs, string error)
     {
         buttons.Controls.Clear();
-        if (error != null) { title.Text = error; PlaceNearTray(); return; }
+        if (error != null) { title.Text = error; PlaceAtAnchor(); return; }
 
         title.Text = name + "  -  " + (current.HasValue ? Inputs.Label(current.Value) : "input unknown");
         var list = (inputs != null && inputs.Count > 0 ? inputs : FallbackInputs.ToList()).Distinct().OrderBy(v => v);
@@ -670,7 +672,7 @@ class InputPicker : Form
             b.Click += (s, e) => Switch(target, name);
             buttons.Controls.Add(b);
         }
-        PlaceNearTray();
+        PlaceAtAnchor();
     }
 
     void Switch(int target, string name)
@@ -695,10 +697,18 @@ class InputPicker : Form
         });
     }
 
-    void PlaceNearTray()
+    // Centered horizontally on the click point, above it (below it when there is no room, e.g. a top taskbar),
+    // kept inside the working area. Uses the point saved on open, since Render re-places it after a resize.
+    void PlaceAtAnchor()
     {
-        var area = Screen.FromPoint(Cursor.Position).WorkingArea;
-        Location = new Point(area.Right - Width - 12, area.Bottom - Height - 12);
+        const int gap = 8;
+        var area = Screen.FromPoint(anchor).WorkingArea;
+        int x = anchor.X - Width / 2;
+        int y = anchor.Y - Height - gap;
+        if (y < area.Top) y = anchor.Y + gap;
+        x = Math.Max(area.Left, Math.Min(x, area.Right - Width));
+        y = Math.Max(area.Top, Math.Min(y, area.Bottom - Height));
+        Location = new Point(x, y);
     }
 
     void HidePicker()
