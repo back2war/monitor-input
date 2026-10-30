@@ -394,6 +394,10 @@ final class InputPicker: NSObject, NSPopoverDelegate {
     // Main thread only.
     var last: Snapshot?
     var closedAt = Date.distantPast
+    // A transient popover closes on outside clicks only while the app is active, and an accessory app often
+    // is not (activation is cooperative since macOS 14), so clicks in other apps are watched explicitly.
+    // Global mouse monitors need no Accessibility permission.
+    var outsideClickMonitor: Any?
 
     struct Snapshot {
         var name = ""
@@ -433,6 +437,9 @@ final class InputPicker: NSObject, NSPopoverDelegate {
         // Show cached buttons immediately, then refresh the current input (~100 ms over DDC).
         render(last ?? Snapshot(name: "Reading monitor…"), placeholder: last == nil)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+            self?.popover.performClose(nil)
+        }
         NSApp.activate()
 
         let selector = getSelector()
@@ -445,7 +452,11 @@ final class InputPicker: NSObject, NSPopoverDelegate {
         }
     }
 
-    func popoverDidClose(_ notification: Notification) { closedAt = Date() }
+    func popoverDidClose(_ notification: Notification) {
+        closedAt = Date()
+        if let monitor = outsideClickMonitor { NSEvent.removeMonitor(monitor) }
+        outsideClickMonitor = nil
+    }
 
     private func read(_ selector: String) -> Snapshot {
         guard let display = selectDisplay(selector) else { return Snapshot(error: "No DDC/CI display found") }
