@@ -385,6 +385,7 @@ class TrayContext : ApplicationContext
         icon = new NotifyIcon { Icon = SystemIcons.Application, Text = "Monitor input", Visible = true };
         icon.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) picker.Toggle(); };
         LoadConfig();
+        picker.Warmup();
     }
 
     void LoadConfig()
@@ -506,9 +507,19 @@ class InputPicker : Form
     {
         FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Margin = Padding.Empty
     };
-    MonitorInfo cachedInfo;   // capabilities are slow to read, so keep them per monitor id
-    string cachedId;
+    // Capabilities take about a second to read, so they are fetched once (Warmup) and cached per monitor id.
+    readonly object sync = new object();
+    MonitorInfo cachedInfo;
+    string cachedId, cachedName;
+    int? lastInput;
     DateTime hiddenAt;
+
+    class Snapshot
+    {
+        public string Name, Error;
+        public int? Current;
+        public List<int> Inputs;
+    }
 
     public InputPicker(Func<string> getSelector)
     {
@@ -540,10 +551,25 @@ class InputPicker : Form
         else ShowNearTray();
     }
 
+    // Reads the monitor name and supported inputs in the background right after startup.
+    public void Warmup()
+    {
+        string selector = getSelector();
+        ThreadPool.QueueUserWorkItem(_ => Read(selector));
+    }
+
     public void ShowNearTray()
     {
-        title.Text = "Reading monitor...";
-        buttons.Controls.Clear();
+        // Show cached buttons immediately, then refresh the current input (~100 ms over DDC).
+        Snapshot cached = null;
+        lock (sync)
+        {
+            if (cachedInfo != null)
+                cached = new Snapshot { Name = cachedName, Current = lastInput, Inputs = cachedInfo.Inputs };
+        }
+        if (cached != null) Render(cached);
+        else { title.Text = "Reading monitor..."; buttons.Controls.Clear(); }
+
         Show();
         PlaceNearTray();
         Activate();
@@ -551,31 +577,44 @@ class InputPicker : Form
         string selector = getSelector();
         ThreadPool.QueueUserWorkItem(_ =>
         {
-            string name = null, error = null;
-            int? current = null;
-            List<int> inputs = null;
-            try
+            var fresh = Read(selector);
+            BeginInvoke(new Action(() => Render(fresh)));
+        });
+    }
+
+    Snapshot Read(string selector)
+    {
+        var snap = new Snapshot();
+        try
+        {
+            using (var mons = Monitor.All())
             {
-                using (var mons = Monitor.All())
+                var mon = mons.Select(selector);
+                if (mon == null) { snap.Error = "No DDC/CI monitor found"; return snap; }
+                snap.Current = mon.GetInput();
+
+                MonitorInfo info;
+                lock (sync) info = cachedId == mon.HwId ? cachedInfo : null;
+                if (info == null) info = MonitorInfo.FromCapabilities(mon.GetCapabilities());
+
+                snap.Name = info.Model ?? mon.HwId;
+                snap.Inputs = info.Inputs;
+                lock (sync)
                 {
-                    var mon = mons.Select(selector);
-                    if (mon == null) error = "No DDC/CI monitor found";
-                    else
-                    {
-                        current = mon.GetInput();
-                        if (cachedInfo == null || cachedId != mon.HwId)
-                        {
-                            cachedInfo = MonitorInfo.FromCapabilities(mon.GetCapabilities());
-                            cachedId = mon.HwId;
-                        }
-                        name = cachedInfo.Model ?? mon.HwId;
-                        inputs = cachedInfo.Inputs;
-                    }
+                    cachedInfo = info;
+                    cachedId = mon.HwId;
+                    cachedName = snap.Name;
+                    lastInput = snap.Current;
                 }
             }
-            catch (Exception e) { error = e.Message; }
-            BeginInvoke(new Action(() => Render(name, current, inputs, error)));
-        });
+        }
+        catch (Exception e) { snap.Error = e.Message; }
+        return snap;
+    }
+
+    void Render(Snapshot snap)
+    {
+        Render(snap.Name, snap.Current, snap.Inputs, snap.Error);
     }
 
     void Render(string name, int? current, List<int> inputs, string error)
@@ -615,8 +654,12 @@ class InputPicker : Form
             catch (Exception e) { error = e.Message; }
             BeginInvoke(new Action(() =>
             {
-                if (error == null) HidePicker();   // the picture usually leaves this PC anyway
-                else Render(name, null, cachedInfo != null ? cachedInfo.Inputs : null, error);
+                if (error == null)
+                {
+                    lock (sync) lastInput = target;
+                    HidePicker();   // the picture usually leaves this PC anyway
+                }
+                else Render(name, null, null, error);
             }));
         });
     }
