@@ -1,13 +1,15 @@
 // Monitor input switcher over DDC/CI (VCP 0x60 "Input Source") for Apple Silicon Macs.
 // Uses the private IOAVService I2C API (same approach as MonitorControl / m1ddc).
 //
-// Build:  ./build.sh
+// Build:  ./build.sh   (CLI binary + MonitorInput.app)
 //   monitor-input list | get | set <input> | <input>   CLI
 //   monitor-input tray                                 menu bar agent with global hotkeys
+//   MonitorInput.app                                   same as 'tray'
 
 import AppKit
 import Carbon.HIToolbox
 import IOKit
+import ServiceManagement
 
 // MARK: - DDC/CI over IOAVService
 
@@ -27,6 +29,9 @@ func IOAVServiceWriteI2C(_ service: IOAVService, _ chipAddress: UInt32, _ dataAd
 let ddcChip: UInt32 = 0x37      // DDC/CI 7-bit I2C address
 let ddcHost: UInt32 = 0x51      // host "sub-address"
 let vcpInput: UInt8 = 0x60
+
+// All DDC traffic from the tray (hotkeys, picker) goes through one queue so commands never interleave on the bus.
+let ddcQueue = DispatchQueue(label: "monitor-input.ddc", qos: .userInitiated)
 
 struct Display {
     let index: Int
@@ -66,8 +71,59 @@ struct Display {
         return nil
     }
 
+    // MCCS capabilities string, read in chunks of up to 32 bytes with the F3 request (~1.5 s on the PG32UQ).
+    func capabilities() -> String? {
+        var caps: [UInt8] = []
+        while caps.count < 4096 {
+            guard let chunk = capabilitiesChunk(offset: caps.count) else { return nil }
+            if chunk.isEmpty { break }
+            caps += chunk
+        }
+        return caps.isEmpty ? nil : String(decoding: caps.filter { $0 != 0 }, as: UTF8.self)
+    }
+
+    private func capabilitiesChunk(offset: Int) -> [UInt8]? {
+        var request: [UInt8] = [0x83, 0xF3, UInt8(offset >> 8), UInt8(offset & 0xFF), 0]
+        request[4] = request[0..<4].reduce(UInt8(0x6E ^ 0x51)) { $0 ^ $1 }
+        for _ in 0..<5 {
+            usleep(10_000)
+            guard IOAVServiceWriteI2C(service, ddcChip, ddcHost, &request, UInt32(request.count)) == kIOReturnSuccess else { continue }
+            usleep(50_000)
+            var reply = [UInt8](repeating: 0, count: 38)
+            guard IOAVServiceReadI2C(service, ddcChip, ddcHost, &reply, UInt32(reply.count)) == kIOReturnSuccess else { continue }
+            // reply: 6E <0x80 | len> E3 <offH> <offL> <data...> <chk>; len counts E3, the offset and the data
+            let len = Int(reply[1] & 0x7F)
+            guard reply[2] == 0xE3, (3...35).contains(len),
+                  reply[0..<(2 + len)].reduce(UInt8(0x50), { $0 ^ $1 }) == reply[2 + len],
+                  Int(reply[3]) << 8 | Int(reply[4]) == offset else { usleep(50_000); continue }
+            return Array(reply[5..<(2 + len)])
+        }
+        return nil
+    }
+
     func getInput() -> Int? { read(vcp: vcpInput).map { Int($0 & 0xFF) } }
     func setInput(_ value: Int) -> Bool { write(vcp: vcpInput, value: UInt16(value)) }
+}
+
+// Parsed capabilities, e.g. "(prot(monitor)...model(PG32UQ)...vcp(... 60(11 12 0F) ...))".
+struct MonitorInfo {
+    var model: String?
+    var inputs: [Int] = []
+
+    init(capabilities caps: String?) {
+        guard let caps = caps else { return }
+        model = firstGroup(caps, #"model\(([^)]*)\)"#)
+        if let list = firstGroup(caps, #"\b60\(([0-9A-Fa-f ]*)\)"#) {
+            inputs = list.split(separator: " ").compactMap { Int($0, radix: 16) }
+        }
+    }
+
+    private func firstGroup(_ s: String, _ pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let m = regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)),
+              let r = Range(m.range(at: 1), in: s) else { return nil }
+        return String(s[r])
+    }
 }
 
 func registryProperty(_ entry: io_registry_entry_t, _ key: String) -> Any? {
@@ -123,10 +179,10 @@ func selectDisplay(_ selector: String) -> Display? {
     if sel.lowercased() != "auto" {
         return displays.first { $0.name.localizedCaseInsensitiveContains(sel) || $0.vendor.localizedCaseInsensitiveContains(sel) }
     }
-    let isAsus: (Display) -> Bool = { $0.vendor.uppercased() == "AUS" }
     if displays.count <= 1 { return displays.first }
-    let responding = displays.filter { $0.getInput() != nil }
-    return responding.first(where: isAsus) ?? responding.first ?? displays.first(where: isAsus) ?? displays.first
+    let isAsus: (Display) -> Bool = { $0.vendor.uppercased() == "AUS" }
+    let candidates = displays.filter(isAsus) + displays.filter { !isAsus($0) }
+    return candidates.first { $0.getInput() != nil } ?? candidates.first
 }
 
 // MARK: - Input names
@@ -153,6 +209,22 @@ func inputName(_ v: Int) -> String {
     return "\(n) (0x\(String(format: "%02X", v)))"
 }
 
+// Human-readable name for the picker.
+func inputLabel(_ v: Int) -> String {
+    switch v {
+    case 0x03: return "DVI"
+    case 0x0F: return "DisplayPort"
+    case 0x10: return "DisplayPort 2"
+    case 0x11: return "HDMI 1"
+    case 0x12: return "HDMI 2"
+    case 0x13: return "USB-C"
+    case 0x14: return "USB-C 2"
+    case 0x53: return "HDMI 3"
+    case 0x54: return "HDMI 4"
+    default: return String(format: "Input 0x%02X", v)
+    }
+}
+
 struct MonitorError: Error, CustomStringConvertible {
     let description: String
     init(_ d: String) { description = d }
@@ -170,6 +242,17 @@ func switchInput(_ spec: String, selector: String) throws -> String {
     }
     guard display.setInput(target) else { throw MonitorError("DDC write failed") }
     return "Display \(display.index) (\(display.vendor) \(display.name)) -> \(inputName(target))"
+}
+
+// MARK: - Launch at login (only from the .app bundle)
+
+let isAppBundle = Bundle.main.bundlePath.hasSuffix(".app")
+
+func loginItemEnabled() -> Bool { SMAppService.mainApp.status == .enabled }
+
+func setLoginItem(_ on: Bool) throws {
+    if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+    if on && SMAppService.mainApp.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
 }
 
 // MARK: - Menu bar agent with global hotkeys
@@ -227,18 +310,183 @@ enum State {
 
 func runAction(_ spec: String) {
     let selector = State.selector
-    DispatchQueue.global(qos: .userInitiated).async {
+    ddcQueue.async {
         do { print(try switchInput(spec, selector: selector)) }
         catch { fputs("Error: \(error)\n", stderr); DispatchQueue.main.async { NSSound.beep() } }
     }
 }
 
+// Horizontal arrow from x1 to x2 with a filled triangular head at x2 (y grows down: drawn in flipped images).
+func drawArrow(from x1: CGFloat, to x2: CGFloat, y: CGFloat, head: CGFloat, width: CGFloat) {
+    let dir: CGFloat = x2 > x1 ? 1 : -1
+    let shaft = NSBezierPath()
+    shaft.move(to: NSPoint(x: x1, y: y))
+    shaft.line(to: NSPoint(x: x2 - dir * head * 0.6, y: y))
+    shaft.lineWidth = width
+    shaft.stroke()
+    let tip = NSBezierPath()
+    tip.move(to: NSPoint(x: x2, y: y))
+    tip.line(to: NSPoint(x: x2 - dir * head, y: y - head * 0.75))
+    tip.line(to: NSPoint(x: x2 - dir * head, y: y + head * 0.75))
+    tip.close()
+    tip.fill()
+}
+
+// Menu bar icon: outlined monitor with the two "switch" arrows of the app icon. A template image,
+// so macOS tints it for light / dark menu bars.
+func makeStatusIcon() -> NSImage {
+    let image = NSImage(size: NSSize(width: 20, height: 18), flipped: true) { _ in
+        NSColor.black.set()
+        let body = NSBezierPath(roundedRect: NSRect(x: 1.25, y: 1, width: 17.5, height: 11.5), xRadius: 2.2, yRadius: 2.2)
+        body.lineWidth = 1.5
+        body.stroke()
+        NSBezierPath(rect: NSRect(x: 9, y: 13, width: 2, height: 1.75)).fill()
+        NSBezierPath(roundedRect: NSRect(x: 5.5, y: 14.5, width: 9, height: 1.6), xRadius: 0.8, yRadius: 0.8).fill()
+        drawArrow(from: 5, to: 15, y: 4.6, head: 2.4, width: 1.4)
+        drawArrow(from: 15, to: 5, y: 8.9, head: 2.4, width: 1.4)
+        return true
+    }
+    image.isTemplate = true
+    image.accessibilityDescription = "Monitor input"
+    return image
+}
+
+// Popover under the menu bar icon: monitor name, its current input and one button per supported input.
+final class InputPicker: NSObject, NSPopoverDelegate {
+    static let fallbackInputs = [0x0F, 0x11, 0x12]
+
+    let popover = NSPopover()
+    let stack = NSStackView()
+    let titleLabel = NSTextField(labelWithString: "")
+    let getSelector: () -> String
+    // Capabilities take ~1.5 s to read, so they are fetched once (warmup) and cached per monitor.
+    // Touched only on ddcQueue.
+    var cachedKey: String?
+    var cachedInfo: MonitorInfo?
+    // Main thread only.
+    var last: Snapshot?
+    var closedAt = Date.distantPast
+
+    struct Snapshot {
+        var name = ""
+        var current: Int?
+        var inputs: [Int] = []
+        var error: String?
+    }
+
+    init(getSelector: @escaping () -> String) {
+        self.getSelector = getSelector
+        super.init()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        titleLabel.font = .systemFont(ofSize: NSFont.systemFontSize)
+        let controller = NSViewController()
+        controller.view = stack
+        popover.contentViewController = controller
+        popover.behavior = .transient
+        popover.delegate = self
+    }
+
+    // Reads the monitor name and supported inputs in the background right after startup.
+    func warmup() {
+        let selector = getSelector()
+        ddcQueue.async {
+            let snap = self.read(selector)
+            DispatchQueue.main.async { if self.last == nil { self.last = snap } }
+        }
+    }
+
+    func toggle(relativeTo button: NSStatusBarButton) {
+        // A click on the icon closes the transient popover on mouse down; don't reopen it on that same click.
+        if popover.isShown || Date().timeIntervalSince(closedAt) < 0.3 { popover.performClose(nil); return }
+
+        // Show cached buttons immediately, then refresh the current input (~100 ms over DDC).
+        render(last ?? Snapshot(name: "Reading monitor…"), placeholder: last == nil)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        NSApp.activate()
+
+        let selector = getSelector()
+        ddcQueue.async {
+            let snap = self.read(selector)
+            DispatchQueue.main.async {
+                self.last = snap
+                if self.popover.isShown { self.render(snap) }
+            }
+        }
+    }
+
+    func popoverDidClose(_ notification: Notification) { closedAt = Date() }
+
+    private func read(_ selector: String) -> Snapshot {
+        guard let display = selectDisplay(selector) else { return Snapshot(error: "No DDC/CI display found") }
+        let key = "\(display.vendor) \(display.name) \(display.index)"
+        var snap = Snapshot(current: display.getInput())
+        if cachedKey != key || cachedInfo == nil {
+            cachedInfo = MonitorInfo(capabilities: display.capabilities())
+            cachedKey = key
+        }
+        snap.name = cachedInfo?.model ?? (display.name.isEmpty ? "Display \(display.index)" : display.name)
+        snap.inputs = cachedInfo?.inputs ?? []
+        return snap
+    }
+
+    private func render(_ snap: Snapshot, placeholder: Bool = false) {
+        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        stack.addArrangedSubview(titleLabel)
+        if let error = snap.error {
+            titleLabel.stringValue = error
+        } else if placeholder {
+            titleLabel.stringValue = snap.name
+        } else {
+            titleLabel.stringValue = "\(snap.name)  –  " + (snap.current.map(inputLabel) ?? "input unknown")
+            for value in Set(snap.inputs.isEmpty ? Self.fallbackInputs : snap.inputs).sorted() {
+                let active = value == snap.current
+                let button = NSButton(title: (active ? "●  " : "") + inputLabel(value), target: self, action: #selector(choose(_:)))
+                button.tag = value
+                button.controlSize = .large
+                if active { button.font = .boldSystemFont(ofSize: NSFont.systemFontSize(for: .large)) }
+                button.widthAnchor.constraint(equalToConstant: 220).isActive = true
+                stack.addArrangedSubview(button)
+            }
+        }
+        stack.layoutSubtreeIfNeeded()
+        popover.contentSize = stack.fittingSize
+    }
+
+    @objc private func choose(_ sender: NSButton) {
+        let target = sender.tag
+        stack.arrangedSubviews.compactMap { $0 as? NSButton }.forEach { $0.isEnabled = false }
+        titleLabel.stringValue = "Switching to \(inputLabel(target))…"
+        let selector = getSelector()
+        ddcQueue.async {
+            var failure: String?
+            do { try switchInput(String(target), selector: selector) } catch { failure = "\(error)" }
+            DispatchQueue.main.async {
+                if let failure = failure {
+                    self.render(Snapshot(error: failure))
+                } else {
+                    self.last?.current = target
+                    self.popover.performClose(nil)   // the picture usually leaves this Mac anyway
+                }
+            }
+        }
+    }
+}
+
 final class TrayApp: NSObject, NSApplicationDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let menu = NSMenu()
+    lazy var picker = InputPicker(getSelector: { State.selector })
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "display", accessibilityDescription: "Monitor input")
+            button.image = makeStatusIcon()
+            button.toolTip = "Monitor input"
+            button.target = self
+            button.action = #selector(statusClicked(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
@@ -250,6 +498,19 @@ final class TrayApp: NSObject, NSApplicationDelegate {
             return noErr
         }, 1, &spec, nil, nil)
         loadConfig()
+        picker.warmup()
+    }
+
+    // Left click: input picker. Right click / ctrl+click: menu.
+    @objc func statusClicked(_ sender: NSStatusBarButton) {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            statusItem.menu = menu
+            sender.performClick(nil)
+            statusItem.menu = nil
+        } else {
+            picker.toggle(relativeTo: sender)
+        }
     }
 
     @objc func loadConfig() {
@@ -263,7 +524,13 @@ final class TrayApp: NSObject, NSApplicationDelegate {
             try? defaultConfig.write(to: configURL, atomically: true, encoding: .utf8)
         }
 
-        let menu = NSMenu()
+        menu.removeAllItems()
+        let open = NSMenuItem(title: "Choose input…", action: #selector(openPicker), keyEquivalent: "")
+        open.target = self
+        menu.addItem(open)
+        menu.addItem(.separator())
+
+        var errors: [String] = []
         let text = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
         for raw in text.split(separator: "\n") {
             let line = raw.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
@@ -272,13 +539,13 @@ final class TrayApp: NSObject, NSApplicationDelegate {
             let val = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
             if key.lowercased() == "monitor" { State.selector = val; continue }
 
-            guard let hk = parseHotkey(key) else { fputs("Bad hotkey: \(key)\n", stderr); continue }
+            guard let hk = parseHotkey(key) else { errors.append("Bad hotkey: \(key)"); continue }
             let id = EventHotKeyID(signature: OSType(0x4D_49_4E_50), id: UInt32(State.actions.count))   // 'MINP'
             var ref: EventHotKeyRef?
             if RegisterEventHotKey(hk.key, hk.mods, id, GetApplicationEventTarget(), 0, &ref) == noErr, let ref = ref {
                 State.refs.append(ref)
             } else {
-                fputs("Hotkey \(key) is already taken\n", stderr)
+                errors.append("\(key) is already taken by another app")
             }
             State.actions.append(val)
 
@@ -288,19 +555,45 @@ final class TrayApp: NSObject, NSApplicationDelegate {
             menu.addItem(item)
         }
 
+        if !errors.isEmpty {
+            menu.addItem(.separator())
+            for error in errors {
+                fputs("\(error)\n", stderr)
+                menu.addItem(withTitle: "⚠︎ \(error)", action: nil, keyEquivalent: "").isEnabled = false
+            }
+        }
+
         menu.addItem(.separator())
+        if isAppBundle {
+            let login = NSMenuItem(title: "Launch at login", action: #selector(toggleLoginItem(_:)), keyEquivalent: "")
+            login.target = self
+            login.state = loginItemEnabled() ? .on : .off
+            menu.addItem(login)
+        }
         menu.addItem(withTitle: "Edit hotkeys…", action: #selector(editConfig), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Reload hotkeys", action: #selector(loadConfig), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        statusItem.menu = menu
+    }
+
+    @objc func openPicker() {
+        if let button = statusItem.button { picker.toggle(relativeTo: button) }
     }
 
     @objc func menuSwitch(_ sender: NSMenuItem) {
         if let spec = sender.representedObject as? String { runAction(spec) }
     }
 
+    @objc func toggleLoginItem(_ sender: NSMenuItem) {
+        do { try setLoginItem(!loginItemEnabled()) } catch { NSSound.beep(); fputs("Login item: \(error)\n", stderr) }
+        sender.state = loginItemEnabled() ? .on : .off
+    }
+
     @objc func editConfig() {
-        NSWorkspace.shared.open(configURL)
+        // .conf has no default app; -t opens it in the default text editor.
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        p.arguments = ["-t", configURL.path]
+        try? p.run()
     }
 }
 
@@ -310,12 +603,13 @@ func usage() {
     print("""
     monitor-input - switch monitor input source via DDC/CI (VCP 0x60), Apple Silicon
 
-      monitor-input list                 show external displays and current input
+      monitor-input list                 show external displays, current and supported inputs
       monitor-input get                  print current input
       monitor-input set <input>          switch input
       monitor-input <input>              same as set
       monitor-input set dp,hdmi1         toggle/cycle between inputs
       monitor-input tray                 menu bar agent with hotkeys (~/.config/monitor-input.conf)
+      monitor-input login-item on|off    launch MonitorInput.app at login (run from inside the .app)
 
       -m, --monitor <sel>   auto (default) | index from 'list' | name substring (e.g. PG32UQ)
 
@@ -323,7 +617,16 @@ func usage() {
     """)
 }
 
-var args = Array(CommandLine.arguments.dropFirst())
+func runTray() -> Never {
+    let app = NSApplication.shared
+    let delegate = TrayApp()
+    app.delegate = delegate
+    app.setActivationPolicy(.accessory)   // no Dock icon
+    app.run()
+    exit(0)
+}
+
+var args = Array(CommandLine.arguments.dropFirst()).filter { !$0.hasPrefix("-psn_") }   // Finder's process serial number
 var selector = "auto"
 if let i = args.firstIndex(where: { $0 == "-m" || $0 == "--monitor" }), i + 1 < args.count {
     selector = args[i + 1]
@@ -332,6 +635,8 @@ if let i = args.firstIndex(where: { $0 == "-m" || $0 == "--monitor" }), i + 1 < 
 
 do {
     switch args.first?.lowercased() {
+    case nil where isAppBundle:
+        runTray()
     case nil, "-h", "--help":
         usage()
     case "list":
@@ -339,7 +644,13 @@ do {
         if displays.isEmpty { print("No external displays found") }
         for d in displays {
             print("[\(d.index)] \(d.name.isEmpty ? "(no display attributes, e.g. unused port)" : "\(d.vendor) \(d.name)")")
-            print("    current input: \(d.getInput().map(inputName) ?? "n/a (no DDC/CI reply)")")
+            let current = d.getInput()
+            print("    current input: \(current.map(inputName) ?? "n/a (no DDC/CI reply)")")
+            guard current != nil else { continue }
+            guard let caps = d.capabilities() else { print("    capabilities: n/a (monitor did not answer)"); continue }
+            let info = MonitorInfo(capabilities: caps)
+            if let model = info.model { print("    model: \(model)") }
+            if !info.inputs.isEmpty { print("    advertised inputs: \(info.inputs.map(inputName).joined(separator: ", "))") }
         }
     case "get":
         guard let v = selectDisplay(selector)?.getInput() else { throw MonitorError("Cannot read input source") }
@@ -348,11 +659,16 @@ do {
         guard args.count >= 2 else { usage(); exit(2) }
         print(try switchInput(args[1], selector: selector))
     case "tray":
-        let app = NSApplication.shared
-        let delegate = TrayApp()
-        app.delegate = delegate
-        app.setActivationPolicy(.accessory)   // no Dock icon
-        app.run()
+        runTray()
+    case "login-item":
+        guard isAppBundle else { throw MonitorError("login-item works only from inside MonitorInput.app") }
+        switch args.dropFirst().first?.lowercased() {
+        case "on": try setLoginItem(true)
+        case "off": try setLoginItem(false)
+        case nil, "status": break
+        default: usage(); exit(2)
+        }
+        print("Launch at login: \(loginItemEnabled() ? "on" : "off") (\(SMAppService.mainApp.status.rawValue))")
     default:
         print(try switchInput(args[0], selector: selector))
     }

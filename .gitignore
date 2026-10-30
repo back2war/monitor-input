@@ -1,6 +1,7 @@
 # build output
 windows/*.exe
 mac/monitor-input
+mac/MonitorInput.app/
 
 # per-user hotkey config
 windows/monitor-input.ini
