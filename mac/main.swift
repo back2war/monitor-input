@@ -114,7 +114,8 @@ func allDisplays() -> [Display] {
     return result
 }
 
-// selector: "auto" (first ASUS display answering DDC, else first answering), index, or name substring.
+// selector: "auto" (first ASUS display answering DDC, else first answering, else first ASUS / first display:
+// some links accept writes but never answer reads), index, or name substring.
 func selectDisplay(_ selector: String) -> Display? {
     let displays = allDisplays()
     let sel = selector.trimmingCharacters(in: .whitespaces)
@@ -122,8 +123,10 @@ func selectDisplay(_ selector: String) -> Display? {
     if sel.lowercased() != "auto" {
         return displays.first { $0.name.localizedCaseInsensitiveContains(sel) || $0.vendor.localizedCaseInsensitiveContains(sel) }
     }
+    let isAsus: (Display) -> Bool = { $0.vendor.uppercased() == "AUS" }
+    if displays.count <= 1 { return displays.first }
     let responding = displays.filter { $0.getInput() != nil }
-    return responding.first { $0.vendor.uppercased() == "AUS" } ?? responding.first
+    return responding.first(where: isAsus) ?? responding.first ?? displays.first(where: isAsus) ?? displays.first
 }
 
 // MARK: - Input names
@@ -335,7 +338,7 @@ do {
         let displays = allDisplays()
         if displays.isEmpty { print("No external displays found") }
         for d in displays {
-            print("[\(d.index)] \(d.vendor) \(d.name)")
+            print("[\(d.index)] \(d.name.isEmpty ? "(no display attributes, e.g. unused port)" : "\(d.vendor) \(d.name)")")
             print("    current input: \(d.getInput().map(inputName) ?? "n/a (no DDC/CI reply)")")
         }
     case "get":

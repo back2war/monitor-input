@@ -64,3 +64,12 @@ Default hotkeys: `Ctrl+Alt+1` DP, `Ctrl+Alt+2` HDMI 1, `Ctrl+Alt+3` HDMI 2.
 
 Known caveat: the built-in HDMI port on the M1 Mac mini and some M1/M2 models does not pass DDC;
 USB-C/Thunderbolt to HDMI/DP works.
+
+Status (2026-10-30): builds with Swift 6.4 without changes; `list` finds the PG32UQ. The owner's Mac is an
+M1 Mac mini (Macmini9,1) on the built-in HDMI port (registry `Transport = {Upstream=DP, Downstream=HDMI}`),
+connected to monitor HDMI 1. Confirmed broken there: EDID reads over I2C 0x50 work, but every DDC/CI reply at 0x37
+is the null message `6E 80 BE` repeated (the converter answers, not the monitor), and `set dp` writes succeed at
+the I2C level but are ignored by the monitor.
+Now connected via a USB-C -> HDMI adapter to monitor HDMI 1: `get` reads `hdmi1` (~0.4 s), `set dp` switches to
+Windows, the `tray` agent shows its menu and `ctrl+opt+1` works. The unused built-in HDMI port still shows up in
+`list` as a nameless DCPAVServiceProxy that never answers; `auto` skips it. TODO items 1 and 2 are done.
