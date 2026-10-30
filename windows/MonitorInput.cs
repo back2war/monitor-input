@@ -382,10 +382,17 @@ class TrayContext : ApplicationContext
     {
         window = new HotkeyWindow(id => Run(actions[id]));
         picker = new InputPicker(() => selector);
-        icon = new NotifyIcon { Icon = SystemIcons.Application, Text = "Monitor input", Visible = true };
+        icon = new NotifyIcon { Icon = LoadAppIcon(SystemInformation.SmallIconSize), Text = "Monitor input", Visible = true };
         icon.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) picker.Toggle(); };
         LoadConfig();
         picker.Warmup();
+    }
+
+    // app.ico is embedded by build.cmd; Icon(stream, size) picks the closest size (16/20/24/32... for the DPI).
+    public static Icon LoadAppIcon(Size size)
+    {
+        using (var s = typeof(TrayContext).Assembly.GetManifestResourceStream("app.ico"))
+            return s != null ? new Icon(s, size) : SystemIcons.Application;
     }
 
     void LoadConfig()
@@ -525,6 +532,7 @@ class InputPicker : Form
     {
         this.getSelector = getSelector;
         Text = "Monitor input";
+        Icon = TrayContext.LoadAppIcon(SystemInformation.IconSize);
         Font = new Font("Segoe UI", 10f);
         FormBorderStyle = FormBorderStyle.FixedToolWindow;
         ShowInTaskbar = false;
