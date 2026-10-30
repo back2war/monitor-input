@@ -336,6 +336,14 @@ func runAction(_ spec: String) {
     }
 }
 
+// Turns the display(s) off right away (the Mac keeps running), like the display sleep timer would.
+func sleepDisplays() {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+    p.arguments = ["displaysleepnow"]
+    do { try p.run() } catch { NSSound.beep(); fputs("pmset: \(error)\n", stderr) }
+}
+
 // Horizontal arrow from x1 to x2 with a filled triangular head at x2 (y grows down: drawn in flipped images).
 func drawArrow(from x1: CGFloat, to x2: CGFloat, y: CGFloat, head: CGFloat, width: CGFloat) {
     let dir: CGFloat = x2 > x1 ? 1 : -1
@@ -471,8 +479,22 @@ final class InputPicker: NSObject, NSPopoverDelegate {
                 stack.addArrangedSubview(button)
             }
         }
+        // Not DDC: works even when the monitor does not answer.
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        stack.addArrangedSubview(separator)
+        let sleep = NSButton(title: "Sleep display", target: self, action: #selector(sleepClicked))
+        sleep.controlSize = .large
+        sleep.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        stack.addArrangedSubview(sleep)
         stack.layoutSubtreeIfNeeded()
         popover.contentSize = stack.fittingSize
+    }
+
+    @objc private func sleepClicked() {
+        popover.performClose(nil)
+        sleepDisplays()
     }
 
     @objc private func choose(_ sender: NSButton) {
@@ -548,6 +570,9 @@ final class TrayApp: NSObject, NSApplicationDelegate {
         let open = NSMenuItem(title: "Choose input…", action: #selector(openPicker), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
+        let sleep = NSMenuItem(title: "Sleep display", action: #selector(sleepDisplaysClicked), keyEquivalent: "")
+        sleep.target = self
+        menu.addItem(sleep)
         menu.addItem(.separator())
 
         var errors: [String] = []
@@ -594,6 +619,8 @@ final class TrayApp: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Reload hotkeys", action: #selector(loadConfig), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     }
+
+    @objc func sleepDisplaysClicked() { sleepDisplays() }
 
     @objc func openPicker() {
         if let button = statusItem.button { picker.toggle(relativeTo: button) }

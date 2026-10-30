@@ -51,7 +51,7 @@ Default hotkeys: `Ctrl+Alt+1` DP, `Ctrl+Alt+2` HDMI 1, `Ctrl+Alt+3` HDMI 2.
   * Capabilities: `F3` request loop in 32-byte chunks, ~1.5 s; `MonitorInfo` parses `model(...)` and `60(...)`.
   * `tray` (or launching `MonitorInput.app` without arguments): menu bar agent (`NSStatusItem`, accessory policy).
     Left click opens `InputPicker`, an `NSPopover` with a button per advertised input (current one bold with a dot),
-    capabilities warmed up at startup; right click / ctrl+click shows the menu ("Launch at login" via `SMAppService`).
+    capabilities warmed up at startup, plus a "Sleep display" button (`pmset displaysleepnow`); right click / ctrl+click shows the menu ("Launch at login" via `SMAppService`).
     Hotkeys via Carbon `RegisterEventHotKey` (no Accessibility permission needed), config
     `~/.config/monitor-input.conf`, default `ctrl+opt+1/2/3`. All tray DDC traffic goes through one serial queue.
   * Menu bar icon is drawn in code (`makeStatusIcon`, template image: outlined monitor with the two arrows).

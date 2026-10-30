@@ -70,7 +70,8 @@ Builds `MonitorInput.app`, copies it to `~/Applications`, enables launch at logi
     ctrl+opt+3 = hdmi2
     ```
     Modifiers: `cmd`, `ctrl`, `opt`, `shift`. Registered with Carbon `RegisterEventHotKey`, so no Accessibility permission is needed.
-  * right click menu: Choose input, the hotkey actions, Launch at login, Edit hotkeys, Reload hotkeys, Quit
+  * "Sleep display" button in the popover (`pmset displaysleepnow`, no DDC needed)
+  * right click menu: Choose input, Sleep display, the hotkey actions, Launch at login, Edit hotkeys, Reload hotkeys, Quit
 
 Apple Silicon has no public DDC API, so this uses the private `IOAVServiceWriteI2C` / `IOAVServiceReadI2C`
 (same approach as MonitorControl, BetterDisplay and m1ddc).
