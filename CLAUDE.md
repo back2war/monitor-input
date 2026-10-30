@@ -28,7 +28,8 @@ ASUS DisplayWidget (by Portrait Displays, `C:\Program Files\Portrait Displays\AS
 * `MonitorInput.cs` - single C# 5 source (no tuples / string interpolation: built by the .NET Framework 4.x `csc.exe`).
   * CLI (`monitor-input.exe`): `list`, `get`, `set <input>`, `set dp,hdmi1` (cycle), `-m <selector>`.
   * Tray (`/define:TRAY`, `monitor-input-tray.exe`): left click opens `InputPicker` (a button per advertised input,
-    active one bold with a dot); right click menu; global hotkeys via `RegisterHotKey` from `monitor-input.ini`
+    active one bold with a dot, plus a "Sleep display" button: `WM_SYSCOMMAND`/`SC_MONITORPOWER` posted to the
+    hidden hotkey window after 500 ms so the mouse-up doesn't wake it); right click menu; global hotkeys via `RegisterHotKey` from `monitor-input.ini`
     next to the exe; "Start with Windows" toggles `HKCU\...\Run\MonitorInputTray`.
   * Capabilities take ~1 s to read, so the picker warms its cache at startup and opens instantly.
   * DDC calls retry: reads 5x100 ms, writes 3x50 ms, capabilities 3x.

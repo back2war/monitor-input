@@ -43,7 +43,8 @@ Re-run it after code changes: the running copy is stopped and replaced, your hot
     Ctrl+Alt+2 = hdmi1
     Ctrl+Alt+3 = hdmi2
     ```
-  * right click menu: Start with Windows, Edit hotkeys, Reload hotkeys, Exit
+  * "Sleep display" button in the window (`SC_MONITORPOWER`, no DDC needed)
+  * right click menu: Choose input, Sleep display, the hotkey actions, Start with Windows, Edit hotkeys, Reload hotkeys, Exit
 
 ## macOS (Apple Silicon)
 

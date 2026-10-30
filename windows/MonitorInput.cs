@@ -366,6 +366,9 @@ class TrayContext : ApplicationContext
 {
     [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr hWnd, int id, uint mods, uint vk);
     [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    const int WM_SYSCOMMAND = 0x0112, SC_MONITORPOWER = 0xF170;
 
     const uint MOD_ALT = 1, MOD_CONTROL = 2, MOD_SHIFT = 4, MOD_WIN = 8, MOD_NOREPEAT = 0x4000;
     const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -381,7 +384,7 @@ class TrayContext : ApplicationContext
     public TrayContext()
     {
         window = new HotkeyWindow(id => Run(actions[id]));
-        picker = new InputPicker(() => selector);
+        picker = new InputPicker(() => selector, SleepDisplays);
         icon = new NotifyIcon { Icon = LoadAppIcon(SystemInformation.SmallIconSize), Text = "Monitor input", Visible = true };
         icon.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) picker.Toggle(); };
         LoadConfig();
@@ -415,6 +418,7 @@ class TrayContext : ApplicationContext
         open.Font = new Font(open.Font, FontStyle.Bold);
         open.Click += (s, e) => picker.ShowNearTray();
         menu.Items.Add(open);
+        menu.Items.Add("Sleep display", null, (s, e) => SleepDisplays());
         menu.Items.Add(new ToolStripSeparator());
         var errors = new List<string>();
         foreach (var raw in File.ReadAllLines(configPath))
@@ -491,6 +495,19 @@ class TrayContext : ApplicationContext
         }
     }
 
+    // Turns the display(s) off right away (the PC keeps running), like the display sleep timer would.
+    // SC_MONITORPOWER is handled by DefWindowProc of any window; posting it to our own hidden window avoids
+    // a blocking HWND_BROADCAST. The short delay lets the click finish so the mouse-up doesn't wake the screen.
+    void SleepDisplays()
+    {
+        IntPtr hwnd = window.Handle;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            Thread.Sleep(500);
+            PostMessage(hwnd, WM_SYSCOMMAND, (IntPtr)SC_MONITORPOWER, (IntPtr)2);   // 2 = power off
+        });
+    }
+
     class HotkeyWindow : NativeWindow
     {
         readonly Action<int> onHotkey;
@@ -528,7 +545,7 @@ class InputPicker : Form
         public List<int> Inputs;
     }
 
-    public InputPicker(Func<string> getSelector)
+    public InputPicker(Func<string> getSelector, Action sleepDisplays)
     {
         this.getSelector = getSelector;
         Text = "Monitor input";
@@ -546,6 +563,12 @@ class InputPicker : Form
         var layout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true };
         layout.Controls.Add(title);
         layout.Controls.Add(buttons);
+
+        // Separator + "Sleep display", same as the macOS popover; independent of DDC, so always shown.
+        layout.Controls.Add(new Label { BorderStyle = BorderStyle.Fixed3D, AutoSize = false, Width = 220, Height = 2, Margin = new Padding(0, 4, 0, 8) });
+        var sleep = new Button { Text = "Sleep display", Width = 220, Height = 38, Margin = Padding.Empty };
+        sleep.Click += (s, e) => { HidePicker(); sleepDisplays(); };
+        layout.Controls.Add(sleep);
         Controls.Add(layout);
 
         Deactivate += (s, e) => HidePicker();
