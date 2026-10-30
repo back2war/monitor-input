@@ -24,15 +24,19 @@ Wire format of a write: `51 84 03 60 00 <value> <checksum>`, checksum = XOR of a
 ## Windows
 
 ```
-windows\build.cmd
+windows\install.cmd
 ```
 
-Builds with the C# compiler that ships with Windows (.NET Framework 4.x), nothing to install. Produces:
+Builds, copies the binaries to `%LOCALAPPDATA%\MonitorInput`, enables start with Windows and launches the tray app.
+Re-run it after code changes: the running copy is stopped and replaced, your hotkeys are kept.
+`windows\uninstall.cmd` removes everything (including the hotkey config).
+
+`windows\build.cmd` only builds in place. It uses the C# compiler that ships with Windows (.NET Framework 4.x), nothing to install. Produces:
 
 * `monitor-input.exe` - CLI: `list`, `get`, `set hdmi1`, `set dp,hdmi1` (cycles between the listed inputs)
 * `monitor-input-tray.exe` - tray app:
   * left click on the icon opens a small window with a button per supported input
-  * global hotkeys from `monitor-input.ini` (created next to the exe on first run):
+  * global hotkeys from `monitor-input.ini` (created next to the exe on first run, i.e. `%LOCALAPPDATA%\MonitorInput` when installed):
     ```
     monitor = auto
     Ctrl+Alt+1 = dp
