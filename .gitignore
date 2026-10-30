@@ -1,0 +1,6 @@
+# build output
+windows/*.exe
+mac/monitor-input
+
+# per-user hotkey config
+windows/monitor-input.ini
