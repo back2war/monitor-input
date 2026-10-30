@@ -27,17 +27,30 @@ func IOAVServiceWriteI2C(_ service: IOAVService, _ chipAddress: UInt32, _ dataAd
                          _ inputBuffer: UnsafeMutableRawPointer, _ inputBufferSize: UInt32) -> IOReturn
 
 let ddcChip: UInt32 = 0x37      // DDC/CI 7-bit I2C address
+// Same address with bit 7 set: the DCP firmware then talks to the monitor behind the built-in DP -> HDMI converter
+// of the M1 Mac mini (and similar ports). With 0x37 the converter itself answers with null messages and drops
+// writes. Found in BetterDisplay, which picks 0x37 / 0xB7 per display.
+let ddcChipBehindConverter: UInt32 = 0xB7
 let ddcHost: UInt32 = 0x51      // host "sub-address"
 let vcpInput: UInt8 = 0x60
 
 // All DDC traffic from the tray (hotkeys, picker) goes through one queue so commands never interleave on the bus.
 let ddcQueue = DispatchQueue(label: "monitor-input.ddc", qos: .userInitiated)
 
-struct Display {
+final class Display {
     let index: Int
     let name: String     // e.g. "PG32UQ"
     let vendor: String   // EDID manufacturer id, e.g. "AUS"
     let service: IOAVService
+    // Settled by the first successful read (see read(vcp:)); writes use it, so read before writing.
+    private(set) var chip = ddcChip
+
+    init(index: Int, name: String, vendor: String, service: IOAVService) {
+        self.index = index
+        self.name = name
+        self.vendor = vendor
+        self.service = service
+    }
 
     func write(vcp: UInt8, value: UInt16) -> Bool {
         var packet: [UInt8] = [0x84, 0x03, vcp, UInt8(value >> 8), UInt8(value & 0xFF), 0]
@@ -47,7 +60,7 @@ struct Display {
             var ok = false
             for _ in 0..<2 {
                 usleep(10_000)
-                if IOAVServiceWriteI2C(service, ddcChip, ddcHost, &packet, UInt32(packet.count)) == kIOReturnSuccess { ok = true }
+                if IOAVServiceWriteI2C(service, chip, ddcHost, &packet, UInt32(packet.count)) == kIOReturnSuccess { ok = true }
             }
             if ok { return true }
             usleep(50_000)
@@ -60,10 +73,15 @@ struct Display {
         request[3] = request[0..<3].reduce(UInt8(0x6E ^ 0x51)) { $0 ^ $1 }
         for _ in 0..<5 {
             usleep(10_000)
-            guard IOAVServiceWriteI2C(service, ddcChip, ddcHost, &request, UInt32(request.count)) == kIOReturnSuccess else { continue }
+            guard IOAVServiceWriteI2C(service, chip, ddcHost, &request, UInt32(request.count)) == kIOReturnSuccess else { continue }
             usleep(50_000)   // MCCS: host must wait >= 40 ms before reading the reply
             var reply = [UInt8](repeating: 0, count: 12)
-            guard IOAVServiceReadI2C(service, ddcChip, ddcHost, &reply, UInt32(reply.count)) == kIOReturnSuccess else { continue }
+            guard IOAVServiceReadI2C(service, chip, ddcHost, &reply, UInt32(reply.count)) == kIOReturnSuccess else { continue }
+            // A null message (6E 80 BE) from a converter that answers for itself: try the other chip address.
+            if reply[1] == 0x80 {
+                chip = chip == ddcChip ? ddcChipBehindConverter : ddcChip
+                continue
+            }
             // reply: 6E 88 02 <result> <vcp> <type> <maxH> <maxL> <curH> <curL> <chk>
             guard reply[2] == 0x02, reply[3] == 0x00, reply[4] == vcp else { usleep(50_000); continue }
             return UInt16(reply[8]) << 8 | UInt16(reply[9])
@@ -87,10 +105,10 @@ struct Display {
         request[4] = request[0..<4].reduce(UInt8(0x6E ^ 0x51)) { $0 ^ $1 }
         for _ in 0..<5 {
             usleep(10_000)
-            guard IOAVServiceWriteI2C(service, ddcChip, ddcHost, &request, UInt32(request.count)) == kIOReturnSuccess else { continue }
+            guard IOAVServiceWriteI2C(service, chip, ddcHost, &request, UInt32(request.count)) == kIOReturnSuccess else { continue }
             usleep(50_000)
             var reply = [UInt8](repeating: 0, count: 38)
-            guard IOAVServiceReadI2C(service, ddcChip, ddcHost, &reply, UInt32(reply.count)) == kIOReturnSuccess else { continue }
+            guard IOAVServiceReadI2C(service, chip, ddcHost, &reply, UInt32(reply.count)) == kIOReturnSuccess else { continue }
             // reply: 6E <0x80 | len> E3 <offH> <offL> <data...> <chk>; len counts E3, the offset and the data
             let len = Int(reply[1] & 0x7F)
             guard reply[2] == 0xE3, (3...35).contains(len),
@@ -236,8 +254,10 @@ func switchInput(_ spec: String, selector: String) throws -> String {
     guard let display = selectDisplay(selector) else { throw MonitorError("No DDC/CI display found (selector: \(selector))") }
     let targets = try spec.split(separator: ",").map { try parseInput(String($0)) }
     guard !targets.isEmpty else { throw MonitorError("Empty input list") }
+    // Always read first: it also settles the chip address the write has to use.
+    let current = display.getInput()
     var target = targets[0]
-    if targets.count > 1, let cur = display.getInput(), let pos = targets.firstIndex(of: cur) {
+    if targets.count > 1, let cur = current, let pos = targets.firstIndex(of: cur) {
         target = targets[(pos + 1) % targets.count]
     }
     guard display.setInput(target) else { throw MonitorError("DDC write failed") }
