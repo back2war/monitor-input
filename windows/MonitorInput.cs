@@ -561,7 +561,12 @@ class InputPicker : Form
         Padding = new Padding(12);
         KeyPreview = true;
 
-        var layout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true };
+        // Padding only grows the auto-sized form on the right/bottom; a non-docked child stays at (0,0), so offset it by hand.
+        var layout = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true,
+            Location = new Point(Padding.Left, Padding.Top), Margin = Padding.Empty
+        };
         layout.Controls.Add(title);
         layout.Controls.Add(buttons);
 
