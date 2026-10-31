@@ -281,12 +281,14 @@ let configURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathCom
 
 let defaultConfig = """
 # hotkey = input   (input: dp, dp2, hdmi1, hdmi2, usbc, raw value, or a list to toggle: dp,hdmi1)
+#                  or: hotkey = sleep   (turn the display off)
 # modifiers: cmd, ctrl, opt (alt), shift
 # monitor = auto | index | name substring (see: monitor-input list)
 monitor = auto
 ctrl+opt+1 = dp
 ctrl+opt+2 = hdmi1
 ctrl+opt+3 = hdmi2
+ctrl+opt+0 = sleep
 
 """
 
@@ -329,6 +331,7 @@ enum State {
 }
 
 func runAction(_ spec: String) {
+    if spec.lowercased() == "sleep" { sleepDisplays(); return }
     let selector = State.selector
     ddcQueue.async {
         do { print(try switchInput(spec, selector: selector)) }
@@ -336,12 +339,15 @@ func runAction(_ spec: String) {
     }
 }
 
-// Turns the display(s) off right away (the Mac keeps running), like the display sleep timer would.
+// Turns the display(s) off (the Mac keeps running), like the display sleep timer would. The short delay lets
+// the click or the hotkey's key-up finish first so it doesn't wake the screen again.
 func sleepDisplays() {
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
-    p.arguments = ["displaysleepnow"]
-    do { try p.run() } catch { NSSound.beep(); fputs("pmset: \(error)\n", stderr) }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+        p.arguments = ["displaysleepnow"]
+        do { try p.run() } catch { NSSound.beep(); fputs("pmset: \(error)\n", stderr) }
+    }
 }
 
 // Horizontal arrow from x1 to x2 with a filled triangular head at x2 (y grows down: drawn in flipped images).

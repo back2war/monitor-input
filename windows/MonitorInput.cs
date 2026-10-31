@@ -407,11 +407,13 @@ class TrayContext : ApplicationContext
         if (!File.Exists(configPath))
             File.WriteAllText(configPath,
                 "# hotkey = input   (input: dp, dp2, hdmi1, hdmi2, usbc, raw value, or a list to toggle: dp,hdmi1)\r\n" +
+                "#                  or: hotkey = sleep   (turn the display off)\r\n" +
                 "# monitor = auto | index | id substring (see: monitor-input.exe list)\r\n" +
                 "monitor = auto\r\n" +
                 "Ctrl+Alt+1 = dp\r\n" +
                 "Ctrl+Alt+2 = hdmi1\r\n" +
-                "Ctrl+Alt+3 = hdmi2\r\n");
+                "Ctrl+Alt+3 = hdmi2\r\n" +
+                "Ctrl+Alt+0 = sleep\r\n");
 
         var menu = new ContextMenuStrip();
         var open = new ToolStripMenuItem("Choose input...");
@@ -453,6 +455,7 @@ class TrayContext : ApplicationContext
 
     void Run(string spec)
     {
+        if (spec.Equals("sleep", StringComparison.OrdinalIgnoreCase)) { SleepDisplays(); return; }
         // DDC/CI is slow (~50-100 ms per command); keep the UI thread free.
         ThreadPool.QueueUserWorkItem(_ =>
         {

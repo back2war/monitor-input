@@ -42,6 +42,7 @@ Re-run it after code changes: the running copy is stopped and replaced, your hot
     Ctrl+Alt+1 = dp
     Ctrl+Alt+2 = hdmi1
     Ctrl+Alt+3 = hdmi2
+    Ctrl+Alt+0 = sleep
     ```
   * "Sleep display" button in the window (`SC_MONITORPOWER`, no DDC needed)
   * right click menu: Choose input, Sleep display, the hotkey actions, Start with Windows, Edit hotkeys, Reload hotkeys, Exit
@@ -69,6 +70,7 @@ Builds `MonitorInput.app`, copies it to `~/Applications`, enables launch at logi
     ctrl+opt+1 = dp
     ctrl+opt+2 = hdmi1
     ctrl+opt+3 = hdmi2
+    ctrl+opt+0 = sleep
     ```
     Modifiers: `cmd`, `ctrl`, `opt`, `shift`. Registered with Carbon `RegisterEventHotKey`, so no Accessibility permission is needed.
   * "Sleep display" button in the popover (`pmset displaysleepnow`, no DDC needed)

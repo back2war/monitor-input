@@ -39,7 +39,9 @@ ASUS DisplayWidget (by Portrait Displays, `C:\Program Files\Portrait Displays\AS
   all entries 32-bit DIB because `csc /win32icon` and `System.Drawing.Icon` reject PNG entries).
 * `.cmd` files must have CRLF line endings.
 
-Default hotkeys: `Ctrl+Alt+1` DP, `Ctrl+Alt+2` HDMI 1, `Ctrl+Alt+3` HDMI 2.
+Default hotkeys: `Ctrl+Alt+1` DP, `Ctrl+Alt+2` HDMI 1, `Ctrl+Alt+3` HDMI 2, `Ctrl+Alt+0` sleep (Mac: `ctrl+opt+...`).
+The action `sleep` turns the display off (same as the "Sleep display" button), delayed 500 ms so the key-up does not wake it.
+The default config is written only on first run; existing configs need the line added by hand.
 
 ## macOS (`mac/`) - done, tested on the PG32UQ (M1 Mac mini: built-in HDMI and a USB-C -> HDMI adapter)
 
